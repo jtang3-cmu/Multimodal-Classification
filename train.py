@@ -120,7 +120,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
     # Model, loss, optimizer
-    model = MultiModalFusionBERT(image_feature_dim=1024, text_feature_dim=166, num_classes=6,
+    model = MultiModalFusionBERT(image_feature_dim=1024, text_feature_dim=32, num_classes=6,
                                  finetune_last_bert_layer=True).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
