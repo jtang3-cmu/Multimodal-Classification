@@ -44,8 +44,6 @@ class MultimodalAMDDataset(Dataset):
         self.image_root_dir = image_root_dir
         self.transforms = transforms
         self.has_images = image_root_dir is not None and os.path.exists(image_root_dir)
-        self.image_paths = []
-        self.labels = []
         self.loaded_volume_ids = set()
         self.expected_volume_ids = set()
         
@@ -54,30 +52,19 @@ class MultimodalAMDDataset(Dataset):
             # Compute expected volume_ids from label file
             for _, row in self.original_df.iterrows():
                 try:
-                    volume_id = f"{int(row['Patient Number'])}_{row['Laterality']}_{int(row['Diagnosis Date'])}"
+                    volume_id = f"{int(row['Patient Number'])}_{row['Laterality']}_{row['Diagnosis Date']}"
                     self.expected_volume_ids.add(volume_id)
                 except (ValueError, TypeError) as e:
                     # Handle cases where conversion might fail
                     continue
                     
+            # Create a list to store image data with associated tabular data
+            self.expanded_rows = []
             self._load_image_data()
-            if self.image_paths:
-                # Create DataFrame from image paths and labels
-                image_df = pd.DataFrame({
-                    'image_path': self.image_paths,
-                    self.label_col: self.labels
-                })
-                
-                # Merge with original data for tabular features
-                # This is a simplified approach - in practice you might need to extract
-                # patient info from image paths to properly merge
-                self.df = self.original_df.copy()
-                self.df['image_path'] = None
-                for i, row in self.df.iterrows():
-                    matching_images = [p for p, l in zip(self.image_paths, self.labels) 
-                                      if l == row[self.label_col]]
-                    if matching_images:
-                        self.df.at[i, 'image_path'] = matching_images[0]
+            
+            if self.expanded_rows:
+                # Create DataFrame from expanded rows
+                self.df = pd.DataFrame(self.expanded_rows)
             else:
                 print("Warning: No matching B-scan images found. Using original dataset.")
                 self.df = self.original_df.copy()
@@ -89,11 +76,12 @@ class MultimodalAMDDataset(Dataset):
         # Encode categorical data with special handling for missing values
         self.encoders = {}
         for col in self.categorical_cols:
-            le = LabelEncoder()
-            # Fill NaN with a special string before encoding
-            filled_values = self.df[col].fillna('MISSING_VALUE').astype(str)
-            self.df[col] = le.fit_transform(filled_values)
-            self.encoders[col] = le
+            if col in self.df.columns:
+                le = LabelEncoder()
+                # Fill NaN with a special string before encoding
+                filled_values = self.df[col].fillna('MISSING_VALUE').astype(str)
+                self.df[col] = le.fit_transform(filled_values)
+                self.encoders[col] = le
         
         # Encode label column (should not have missing values)
         le = LabelEncoder()
@@ -102,7 +90,7 @@ class MultimodalAMDDataset(Dataset):
         
         # Create mask for missing values in continuous columns
         self.has_cont_mask = True
-    
+
     def _find_b_scans_directory(self, root_path):
         """Find directory containing B-scan images"""
         for dirpath, _, filenames in os.walk(root_path):
@@ -112,7 +100,8 @@ class MultimodalAMDDataset(Dataset):
     
     def _load_image_data(self):
         """
-        Load image paths and corresponding labels using the approach from OCTDataset.
+        Load image paths and corresponding labels, creating one row per B-scan image
+        with all associated tabular data.
         """
         for patient_id in os.listdir(self.image_root_dir):
             try:
@@ -132,9 +121,8 @@ class MultimodalAMDDataset(Dataset):
                             
                             for scan_date in os.listdir(eye_path):
                                 try:
-                                    scan_date_int = int(scan_date)
-                                    if eye_df['Diagnosis Date'].isin([scan_date_int]).any():
-                                        scan_date_df = eye_df[eye_df['Diagnosis Date'] == scan_date_int]
+                                    if eye_df['Diagnosis Date'].isin([scan_date]).any():
+                                        scan_date_df = eye_df[eye_df['Diagnosis Date'] == scan_date]
                                         scan_date_path = os.path.join(eye_path, scan_date)
                                         if not os.path.isdir(scan_date_path):
                                             continue
@@ -147,14 +135,18 @@ class MultimodalAMDDataset(Dataset):
                                             for img_name in os.listdir(b_scans_path):
                                                 if img_name.lower().endswith(('.jpg', '.png')):
                                                     img_path = os.path.join(b_scans_path, img_name)
-                                                    self.image_paths.append(img_path)
-                                                    self.labels.append(scan_date_df[self.label_col].iloc[0])
+                                                    
+                                                    # For each B-scan, create a new row with all tabular data
+                                                    for _, tabular_row in scan_date_df.iterrows():
+                                                        new_row = tabular_row.to_dict()
+                                                        new_row['image_path'] = img_path
+                                                        self.expanded_rows.append(new_row)
                                 except (ValueError, TypeError):
                                     continue
             except (ValueError, TypeError):
                 continue
         
-        print(f"Loaded {len(self.image_paths)} B-scan images")
+        print(f"Created expanded dataset with {len(self.expanded_rows)} rows (one per B-scan)")
         print(f"Volumes successfully loaded: {len(self.loaded_volume_ids)} out of {len(self.expected_volume_ids)} expected")
     
     def report_missing_volumes(self):
@@ -214,7 +206,7 @@ class MultimodalAMDDataset(Dataset):
     
     def get_category_dims(self):
         """Return the number of unique values for each categorical column"""
-        return [self.df[col].nunique() for col in self.categorical_cols]
+        return [self.df[col].nunique() for col in self.categorical_cols if col in self.df.columns]
     
     def get_label_map(self):
         """Return the mapping from encoded labels to original labels"""
