@@ -1,132 +1,363 @@
+import os
+import time
 import numpy as np
 import torch
-from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
-from transformers import BertModel
-from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import classification_report
+import torch.nn as nn
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from utils import plot_training_history
 
-# ======================== Dataset ========================
-class MultiModalEmbeddingDataset(Dataset):
-    def __init__(self, image_embeddings, text_embeddings, labels):
-        self.image_embeddings = torch.tensor(image_embeddings, dtype=torch.float32)
-        self.text_embeddings = torch.tensor(text_embeddings, dtype=torch.float32)
-        self.labels = torch.tensor(labels, dtype=torch.long)
-
-    def __len__(self):
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        return self.image_embeddings[idx], self.text_embeddings[idx], self.labels[idx]
-
-# =================== Cross-Attention Module ===================
-class CrossAttentionFusion(nn.Module):
-    def __init__(self, hidden_dim=768, num_heads=8):
-        super().__init__()
-        self.cross_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
-        self.layer_norm = nn.LayerNorm(hidden_dim)
-
-    def forward(self, query, key, value):
-        attn_output, _ = self.cross_attn(query=query, key=key, value=value)
-        return self.layer_norm(query + attn_output)
-
-# =================== Main Model ===================
-class MultiModalFusionBERT(nn.Module):
-    def __init__(self, image_feature_dim, text_feature_dim, hidden_dim=768, num_heads=8, num_classes=6, finetune_last_bert_layer=False):
-        super().__init__()
-        self.image_fc = nn.Linear(image_feature_dim, hidden_dim)
-        self.text_fc = nn.Linear(text_feature_dim, hidden_dim)
-        self.cross_attn_fusion = CrossAttentionFusion(hidden_dim=hidden_dim, num_heads=num_heads)
-        self.bert_encoder = BertModel.from_pretrained('bert-base-uncased')
-
-        if finetune_last_bert_layer:
-            for param in self.bert_encoder.parameters():
-                param.requires_grad = False
-            for param in self.bert_encoder.encoder.layer[-1].parameters():
-                param.requires_grad = True
-            if hasattr(self.bert_encoder, 'pooler'):
-                for param in self.bert_encoder.pooler.parameters():
-                    param.requires_grad = True
-
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, num_classes)
-        )
-
-    def forward(self, image_features, text_features):
-        img_embed = self.image_fc(image_features).unsqueeze(1)
-        text_embed = self.text_fc(text_features).unsqueeze(1)
-        fused = self.cross_attn_fusion(query=text_embed, key=img_embed, value=img_embed)
-        combined_seq = torch.cat([fused, text_embed], dim=1)
-        attention_mask = torch.ones(combined_seq.size()[:2], dtype=torch.long, device=combined_seq.device)
-        bert_output = self.bert_encoder(inputs_embeds=combined_seq, attention_mask=attention_mask)
-        cls_token = bert_output.last_hidden_state[:, 0, :]
-        return self.classifier(cls_token)
-
-# =================== Train Function ===================
-def train_model(model, dataloader, criterion, optimizer, device):
-    model.train()
-    total_loss, correct = 0, 0
-    for image_feats, text_feats, labels in dataloader:
-        image_feats, text_feats, labels = image_feats.to(device), text_feats.to(device), labels.to(device)
-        optimizer.zero_grad()
-        outputs = model(image_feats, text_feats)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-        correct += (outputs.argmax(dim=1) == labels).sum().item()
-    return total_loss / len(dataloader), correct / len(dataloader.dataset)
-
-# =================== Validation Function ===================
-def evaluate_model(model, dataloader, device):
-    model.eval()
-    true_all, pred_all = [], []
-    with torch.no_grad():
-        for image_feats, text_feats, labels in dataloader:
-            image_feats, text_feats = image_feats.to(device), text_feats.to(device)
-            outputs = model(image_feats, text_feats)
-            preds = outputs.argmax(dim=1).cpu().numpy()
-            true_all.extend(labels.numpy())
-            pred_all.extend(preds)
-    print(classification_report(true_all, pred_all, target_names=[
-        "Early AMD", "GA", "Int AMD", "Not AMD", "Scar", "Wet"
-    ]))
-
-# =================== Main ===================
-if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Load your data
-    image_embeddings = np.load("D:/AI_Project_BME/Multimodal-Classification/outputs/volume_features.npy")
-    text_embeddings = np.load("D:/AI_Project_BME/Multimodal-Classification/outputs/text_embeddings.npy")
-    labels = np.load("D:/AI_Project_BME/Multimodal-Classification/outputs/volume_labels.npy")
-
-    # Compute class weights
-    class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(labels), y=labels)
-    class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
+def train_and_validate(model, train_loader, val_loader, criterion, optimizer, scheduler, device, num_epochs=10):
+    """
+    Train and validate the model, tracking metrics and using learning rate scheduling.
     
-    # Train/val split
-    train_img, val_img, train_text, val_text, train_label, val_label = train_test_split(
-        image_embeddings, text_embeddings, labels, test_size=0.2, random_state=42
+    Args:
+        model: The model to train
+        train_loader: DataLoader for training data
+        val_loader: DataLoader for validation data
+        criterion: Loss function
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        device: Device to run on (cuda/cpu)
+        num_epochs: Number of epochs to train
+    
+    Returns:
+        dict: Dictionary containing training history
+    """
+    model.to(device)
+    
+    # Initialize metrics tracking
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'train_acc': [],
+        'val_acc': [],
+        'lr': [],
+        'epoch_times': []
+    }
+    
+    print("Starting training...")
+    for epoch in range(num_epochs):
+        start_time = time.time()
+        
+        # Training phase
+        model.train()
+        train_losses = []
+        train_preds = []
+        train_targets = []
+        
+        for batch in train_loader:
+            optimizer.zero_grad()
+            
+            categorical = batch['categorical'].to(device)
+            continuous = batch['continuous'].to(device)
+            
+            # Handle image if available
+            if 'image' in batch:
+                images = batch['image'].to(device)
+            else:
+                # Create a dummy tensor if no images
+                images = torch.zeros((categorical.size(0), 3, 224, 224), device=device)
+            
+            labels = batch['label'].to(device)
+            
+            outputs = model(images, categorical, continuous)
+            loss = criterion(outputs, labels)
+            
+            loss.backward()
+            optimizer.step()
+            
+            # Record metrics
+            train_losses.append(loss.item())
+            _, predicted = torch.max(outputs, 1)
+            train_preds.extend(predicted.cpu().numpy())
+            train_targets.extend(labels.cpu().numpy())
+        
+        # Calculate epoch metrics
+        train_loss = np.mean(train_losses)
+        train_acc = accuracy_score(train_targets, train_preds)
+        
+        # Validation phase
+        model.eval()
+        val_losses = []
+        val_preds = []
+        val_targets = []
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
+                
+                # Handle image if available
+                if 'image' in batch:
+                    images = batch['image'].to(device)
+                else:
+                    # Create a dummy tensor if no images
+                    images = torch.zeros((categorical.size(0), 3, 224, 224), device=device)
+                
+                labels = batch['label'].to(device)
+                
+                outputs = model(images, categorical, continuous)
+                loss = criterion(outputs, labels)
+                
+                # Record metrics
+                val_losses.append(loss.item())
+                _, predicted = torch.max(outputs, 1)
+                val_preds.extend(predicted.cpu().numpy())
+                val_targets.extend(labels.cpu().numpy())
+        
+        # Calculate validation metrics
+        val_loss = np.mean(val_losses)
+        val_acc = accuracy_score(val_targets, val_preds)
+        
+        # Update learning rate
+        scheduler.step(val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # Record epoch time
+        epoch_time = time.time() - start_time
+        
+        # Store history
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['train_acc'].append(train_acc)
+        history['val_acc'].append(val_acc)
+        history['lr'].append(current_lr)
+        history['epoch_times'].append(epoch_time)
+        
+        # Print metrics
+        print(f"Epoch {epoch+1}/{num_epochs} - {epoch_time:.2f}s - lr: {current_lr:.6f}")
+        print(f"  Train Loss: {train_loss:.4f} - Train Acc: {train_acc:.4f}")
+        print(f"  Val Loss: {val_loss:.4f} - Val Acc: {val_acc:.4f}")
+    
+    total_time = sum(history['epoch_times'])
+    print(f"Training completed in {total_time:.2f}s")
+    
+    return history
+
+def train_model(args, model, train_loader, val_loader, device):
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()), 
+        lr=args.lr, 
+        weight_decay=args.weight_decay
     )
+    scheduler = ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5, verbose=True)
+    
+    history = {
+        'train_loss': [], 'val_loss': [],
+        'train_acc': [], 'val_acc': [],
+        'lr': [], 'epoch_times': []
+    }
+    
+    print(f"Starting training {args.model_type} model for {args.epochs} epochs...")
+    for epoch in range(args.epochs):
+        start_time = time.time()
+        
+        # Training phase
+        model.train()
+        train_losses = []
+        train_preds = []
+        train_targets = []
+        
+        for batch in train_loader:
+            optimizer.zero_grad()
+            
+            if args.model_type == 'multimodal':
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
+                images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(images, categorical, continuous)
+            
+            elif args.model_type == 'image_only':
+                images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(images)
+            
+            elif args.model_type == 'tabular_only':
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(categorical, continuous)
+            
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            train_losses.append(loss.item())
+            _, predicted = torch.max(outputs, 1)
+            train_preds.extend(predicted.cpu().numpy())
+            train_targets.extend(labels.cpu().numpy())
+        
+        train_loss = np.mean(train_losses)
+        train_acc = accuracy_score(train_targets, train_preds)
+        
+        # Validation phase
+        val_loss, val_acc = evaluate(args, model, val_loader, criterion, device)
+        
+        # Update learning rate
+        scheduler.step(val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # Record epoch time
+        epoch_time = time.time() - start_time
+        
+        # Store history
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['train_acc'].append(train_acc)
+        history['val_acc'].append(val_acc)
+        history['lr'].append(current_lr)
+        history['epoch_times'].append(epoch_time)
+        
+        # Print metrics
+        print(f"Epoch {epoch+1}/{args.epochs} - {epoch_time:.2f}s - lr: {current_lr:.6f}")
+        print(f"  Train Loss: {train_loss:.4f} - Train Acc: {train_acc:.4f}")
+        print(f"  Val Loss: {val_loss:.4f} - Val Acc: {val_acc:.4f}")
+    
+    # Save final model
+    final_model_path = os.path.join(args.output_dir, f"final_{args.model_type}_model.pt")
+    torch.save({
+        'epoch': args.epochs,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_acc': val_acc,
+        'val_loss': val_loss,
+    }, final_model_path)
+    
+    total_time = sum(history['epoch_times'])
+    print(f"Training completed in {total_time:.2f}s")
+    print(f"Final validation accuracy: {val_acc:.4f}")
+    
+    # Plot and save training history
+    plot_training_history(history, args.output_dir, args.model_type)
+    
+    return history, final_model_path
 
-    # Datasets and loaders
-    train_dataset = MultiModalEmbeddingDataset(train_img, train_text, train_label)
-    val_dataset = MultiModalEmbeddingDataset(val_img, val_text, val_label)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+def evaluate(args, model, data_loader, criterion, device):
+    model.eval()
+    losses = []
+    all_preds = []
+    all_targets = []
+    
+    with torch.no_grad():
+        for batch in data_loader:
+            if args.model_type == 'multimodal':
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
+                images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(images, categorical, continuous)
+            
+            elif args.model_type == 'image_only':
+                images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(images)
+            
+            elif args.model_type == 'tabular_only':
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(categorical, continuous)
+            
+            loss = criterion(outputs, labels)
+            losses.append(loss.item())
+            
+            _, predicted = torch.max(outputs, 1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_targets.extend(labels.cpu().numpy())
+    
+    avg_loss = np.mean(losses)
+    accuracy = accuracy_score(all_targets, all_preds)
+    
+    return avg_loss, accuracy
 
-    # Model, loss, optimizer
-    model = MultiModalFusionBERT(image_feature_dim=1024, text_feature_dim=32, num_classes=6,
-                                 finetune_last_bert_layer=True).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
-
-    # Train
-    for epoch in range(10):
-        train_loss, train_acc = train_model(model, train_loader, criterion, optimizer, device)
-        print(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Accuracy = {train_acc:.4f}")
-        evaluate_model(model, val_loader, device)
+def test_model(args, model, test_loader, device, dataset):
+    model.eval()
+    criterion = nn.CrossEntropyLoss()
+    
+    test_loss, test_acc = evaluate(args, model, test_loader, criterion, device)
+    print(f"Test Loss: {test_loss:.4f}")
+    print(f"Test Accuracy: {test_acc:.4f}")
+    
+    # Detailed evaluation
+    all_preds = []
+    all_targets = []
+    
+    with torch.no_grad():
+        for batch in test_loader:
+            if args.model_type == 'multimodal':
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
+                images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(images, categorical, continuous)
+            
+            elif args.model_type == 'image_only':
+                images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(images)
+            
+            elif args.model_type == 'tabular_only':
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
+                labels = batch['label'].to(device)
+                
+                outputs = model(categorical, continuous)
+            
+            _, predicted = torch.max(outputs, 1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_targets.extend(labels.cpu().numpy())
+    
+    # Get class names if available
+    class_names = dataset.get_label_map() if hasattr(dataset, 'get_label_map') else None
+    
+    # Calculate and print classification report
+    print("\nClassification Report:")
+    if class_names is not None:
+        report = classification_report(all_targets, all_preds, target_names=class_names)
+    else:
+        report = classification_report(all_targets, all_preds)
+    print(report)
+    
+    # Calculate and plot confusion matrix
+    cm = confusion_matrix(all_targets, all_preds)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_names if class_names else "auto",
+                yticklabels=class_names if class_names else "auto")
+    plt.title(f'Confusion Matrix - {args.model_type.replace("_", " ").title()} Model')
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
+    
+    # Save confusion matrix
+    cm_path = os.path.join(args.output_dir, f'{args.model_type}_confusion_matrix.png')
+    plt.savefig(cm_path)
+    plt.close()
+    
+    # Save predictions to file
+    results_df = pd.DataFrame({
+        'True': all_targets,
+        'Predicted': all_preds
+    })
+    if class_names is not None:
+        results_df['True_Label'] = [class_names[i] for i in all_targets]
+        results_df['Predicted_Label'] = [class_names[i] for i in all_preds]
+    
+    results_path = os.path.join(args.output_dir, f'{args.model_type}_test_results.csv')
+    results_df.to_csv(results_path, index=False)
+    
+    print(f"\nTest results saved to {args.output_dir}")
+    return test_loss, test_acc

@@ -1,58 +1,168 @@
+import os
+import argparse
 import torch
-import pandas as pd
-import torch.nn as nn
-import torch.optim as optim
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader
+import numpy as np
 from torchvision import transforms
-from model import MultiModalFusionBERT, RETFoundEncoder, TabTransformer
-from dataset import MultiModalDataset
-from train import train_model
+from torch.utils.data import DataLoader
+from sklearn.model_selection import train_test_split
 
-# ===============================
-# 7. Main Program
-# ===============================
-if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from dataset import MultimodalAMDDataset
+from models import create_model
+from training import train_model, test_model
+from utils import set_seed
+def parse_args():
+    parser = argparse.ArgumentParser(description='Multimodal AMD Classification')
     
-    # Image transformations
-    transform = transforms.Compose([
+    # Dataset parameters
+    parser.add_argument('--data_path', type=str, default='D:/AI_Project_BME/annotation_modified_final_forTrain.xlsx', 
+                        help='Path to the tabular data file')
+    parser.add_argument('--image_dir', type=str, default='D:/cleaning_GUI_annotated_Data/Cirrus_OCT_Imaging_Data', 
+                        help='Path to the image directory')
+    parser.add_argument('--output_dir', type=str, default='./output', 
+                        help='Directory to save models and results')
+    
+    # Model parameters
+    parser.add_argument('--model_type', type=str, default='multimodal', 
+                        choices=['multimodal', 'image_only', 'tabular_only'],
+                        help='Type of model to train')
+    parser.add_argument('--freeze_encoders', action='store_true', 
+                        help='Freeze encoder weights')
+    parser.add_argument('--tab_dim', type=int, default=64, 
+                        help='Dimension of tabular features')
+    parser.add_argument('--hidden_dim', type=int, default=768, 
+                        help='Hidden dimension for fusion')
+    parser.add_argument('--num_heads', type=int, default=8, 
+                        help='Number of attention heads')
+    
+    # Training parameters
+    parser.add_argument('--batch_size', type=int, default=32, 
+                        help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=20, 
+                        help='Number of epochs to train')
+    parser.add_argument('--lr', type=float, default=1e-4, 
+                        help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=1e-5, 
+                        help='Weight decay')
+    parser.add_argument('--test_size', type=float, default=0.2, 
+                        help='Test set size ratio')
+    parser.add_argument('--val_size', type=float, default=0.2, 
+                        help='Validation set size ratio (from training set)')
+    parser.add_argument('--seed', type=int, default=42, 
+                        help='Random seed')
+    
+    return parser.parse_args()
+
+def main():
+    # Parse arguments using the existing function
+    args = parse_args()
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Set random seed for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+    
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Define image transformations
+    image_transforms = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-
-    # Load tabular data (assumed to be saved in a CSV file)
-    df = pd.read_csv("clinical_data.csv")
-    image_paths = df["image_path"].values
-    tabular_data = df.drop(["image_path", "label"], axis=1).values
-    labels = df["label"].values
-
-    # Standardize tabular data
-    scaler = StandardScaler()
-    tabular_data = scaler.fit_transform(tabular_data)
-
-    # Split into training and validation sets
-    train_img, val_img, train_tab, val_tab, train_label, val_label = train_test_split(
-        image_paths, tabular_data, labels, test_size=0.2, random_state=42
+    
+    # Load dataset
+    print(f"Loading dataset from {args.data_path} and {args.image_dir}")
+    dataset = MultimodalAMDDataset(
+        tabular_path=args.data_path,
+        image_root_dir=args.image_dir,
+        transforms=image_transforms
     )
+    
+    print(f"Dataset loaded with {len(dataset)} samples")
+    print(f"Number of classes: {dataset.get_num_classes()}")
+    print(f"Class distribution: {dataset.get_class_distribution()}")
+    
+    # Split dataset into train, validation, and test sets
+    
+    indices = list(range(len(dataset)))
+    
+    # First split off the test set
+    train_val_indices, test_indices = train_test_split(
+        indices, 
+        test_size=args.test_size, 
+        stratify=[dataset[i]['label'].item() for i in indices],
+        random_state=args.seed
+    )
+    
+    # Then split the remaining data into train and validation sets
+    train_indices, val_indices = train_test_split(
+        train_val_indices,
+        test_size=args.val_size / (1 - args.test_size),  # Adjust for the remaining percentage
+        stratify=[dataset[i]['label'].item() for i in train_val_indices],
+        random_state=args.seed
+    )
+    
+    # Create subset datasets
+    train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    val_dataset = torch.utils.data.Subset(dataset, val_indices)
+    test_dataset = torch.utils.data.Subset(dataset, test_indices)
+    
+    print(f"Train set: {len(train_dataset)} samples")
+    print(f"Validation set: {len(val_dataset)} samples")
+    print(f"Test set: {len(test_dataset)} samples")
+    
+    # Create data loaders
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    # Create model
+    model = create_model(args, dataset)
+    model.to(device)
+    
+    # Train model
+    print(f"Starting training for {args.epochs} epochs...")
+    history, final_model_path = train_model(args, model, train_loader, val_loader, device)
+    
+    # Load final model for testing
+    checkpoint = torch.load(final_model_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    print(f"Loaded final model from epoch {checkpoint['epoch']} with validation accuracy {checkpoint['val_acc']:.4f}")
+    
+    # Test model
+    print("Evaluating model on test set...")
+    test_loss, test_acc = test_model(args, model, test_loader, device, dataset)
+    
+    print(f"Final test accuracy: {test_acc:.4f}")
+    print(f"All results saved to {args.output_dir}")
+    
+    return model, history, test_acc
 
-    train_dataset = MultiModalDataset(train_img, train_tab, train_label, transform)
-    val_dataset = MultiModalDataset(val_img, val_tab, val_label, transform)
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
-
-    # Initialize encoders
-    image_encoder = RETFoundEncoder().to(device)
-    tabular_encoder = TabTransformer(input_dim=train_tab.shape[1], output_dim=256).to(device)
-
-    # Initialize multi-modal model
-    model = MultiModalFusionBERT(image_encoder.feature_dim, 256, hidden_dim=768, num_heads=8, num_classes=2).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-
-    # Train the model
-    for epoch in range(10):
-        train_loss, train_acc, train_auc = train_model(model, image_encoder, tabular_encoder, train_loader, criterion, optimizer, device)
-        print(f"Epoch {epoch+1}: Loss = {train_loss:.4f}, Accuracy = {train_acc:.4f}, AUC = {train_auc:.4f}")
+if __name__ == "__main__":
+    main()
