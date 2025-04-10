@@ -150,6 +150,7 @@ class MultimodalAMDDataset(Dataset):
         
         # Get continuous data with mask for missing values
         X_cont_values = self.df.iloc[idx][self.continuous_cols].values
+        X_cont_values = X_cont_values.astype(np.float32)
         # Convert to float and handle NaN values
         X_cont = torch.tensor(X_cont_values, dtype=torch.float32)
         
