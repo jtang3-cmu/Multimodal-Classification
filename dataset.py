@@ -40,9 +40,18 @@ class MultimodalAMDDataset(Dataset):
         self.image_root_dir = image_root_dir
         self.transforms = transforms
         self.has_images = image_root_dir is not None and os.path.exists(image_root_dir)
+        self.loaded_volume_ids = set()
+        self.expected_volume_ids = set()
         
         # Create expanded dataset with one row per B-scan
         if self.has_images:
+            # Compute expected volume_ids from label file
+            self.expected_volume_ids = set(
+                self.original_df.apply(
+                    lambda row: f"{int(row['Patient Number'])}_{row['Laterality']}_{int(row['Diagnosis Date'])}",
+                    axis=1
+                )
+            )
             self._create_expanded_dataset()
         else:
             self.df = self.original_df.copy()
@@ -63,6 +72,13 @@ class MultimodalAMDDataset(Dataset):
         
         # Create mask for missing values in continuous columns
         self.has_cont_mask = True
+    
+    def _find_b_scans_directory(self, root_path):
+        """Find directory containing B-scan images"""
+        for dirpath, _, filenames in os.walk(root_path):
+            if any(fname.lower().endswith(('.jpg', '.png')) for fname in filenames):
+                return dirpath
+        return None
     
     def _create_expanded_dataset(self):
         """
@@ -95,11 +111,15 @@ class MultimodalAMDDataset(Dataset):
                     missing_count += 1
                     continue
                 
-                # Find B-scans directory
+                # Find B-scans directory using the improved function
                 b_scans_path = self._find_b_scans_directory(date_path)
                 if not b_scans_path:
                     missing_count += 1
                     continue
+                
+                # Record that we successfully loaded this volume
+                volume_id = f"{patient_id}_{eye}_{diagnosis_date}"
+                self.loaded_volume_ids.add(volume_id)
                 
                 # Get all B-scan images
                 b_scan_images = []
@@ -117,14 +137,16 @@ class MultimodalAMDDataset(Dataset):
                     new_row = row.copy()
                     new_row['image_path'] = img_path
                     expanded_rows.append(new_row)
-                    found_count += 1
                 
+                found_count += 1
             except (ValueError, TypeError, KeyError) as e:
                 missing_count += 1
                 continue
         
-        print(f"Created expanded dataset: {found_count} B-scan images matched with tabular data")
+        print(f"Created expanded dataset: {found_count} volumes matched with tabular data")
         print(f"Missing matches: {missing_count} tabular records could not be matched with images")
+        print(f"Total expected volumes in label file: {len(self.expected_volume_ids)}")
+        print(f"Volumes successfully loaded from image folders: {len(self.loaded_volume_ids)}")
         
         if expanded_rows:
             self.df = pd.DataFrame(expanded_rows)
@@ -134,12 +156,14 @@ class MultimodalAMDDataset(Dataset):
             self.df['image_path'] = None
             self.has_images = False
     
-    def _find_b_scans_directory(self, root_path):
-        """Find directory containing B-scan images"""
-        for dirpath, _, filenames in os.walk(root_path):
-            if any(fname.lower().endswith(('.jpg', '.png')) for fname in filenames):
-                return dirpath
-        return None
+    def report_missing_volumes(self):
+        """Print volumes that are in label file but not loaded due to missing images"""
+        missing = self.expected_volume_ids - self.loaded_volume_ids
+        print(f"Total expected volumes in label file: {len(self.expected_volume_ids)}")
+        print(f"Volumes successfully loaded from image folders: {len(self.loaded_volume_ids)}")
+        print(f"Missing volumes: {len(missing)}")
+        for vid in list(sorted(missing)):
+            print(" -", vid)
     
     def __len__(self):
         return len(self.df)
@@ -151,14 +175,16 @@ class MultimodalAMDDataset(Dataset):
         # Get continuous data with mask for missing values
         X_cont_values = self.df.iloc[idx][self.continuous_cols].values
         X_cont_values = X_cont_values.astype(np.float32)
+        
         # Convert to float and handle NaN values
         X_cont = torch.tensor(X_cont_values, dtype=torch.float32)
         
         # Create mask for missing continuous values (1 for present, 0 for missing)
         if self.has_cont_mask:
             X_cont_mask = torch.tensor(~np.isnan(X_cont_values), dtype=torch.float32)
-            # Replace NaN with 0 for the actual values
-            X_cont = torch.nan_to_num(X_cont, nan=0.0)
+        
+        # Replace NaN with 0 for the actual values
+        X_cont = torch.nan_to_num(X_cont, nan=0.0)
         
         y = torch.tensor(self.df.iloc[idx][self.label_col], dtype=torch.long)
         
@@ -177,10 +203,8 @@ class MultimodalAMDDataset(Dataset):
             if img_path and os.path.exists(img_path):
                 try:
                     image = Image.open(img_path).convert("RGB")
-                    
                     if self.transforms:
                         image = self.transforms(image)
-                    
                     result['image'] = image
                 except Exception as e:
                     print(f"Error loading image {img_path}: {e}")
