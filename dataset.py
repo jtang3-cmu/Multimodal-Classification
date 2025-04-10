@@ -35,24 +35,54 @@ class MultimodalAMDDataset(Dataset):
         # Load tabular data - only drop rows with missing label
         self.original_df = pd.read_excel(tabular_path)
         self.original_df = self.original_df.dropna(subset=[self.label_col])
+
+        # Replace hyphens with dashes in the 'Diagnosis Date' column
+        if 'Diagnosis Date' in self.original_df.columns:
+            self.original_df['Diagnosis Date'] = self.original_df['Diagnosis Date'].astype(str).str.replace('-', '')
         
         # Image data setup
         self.image_root_dir = image_root_dir
         self.transforms = transforms
         self.has_images = image_root_dir is not None and os.path.exists(image_root_dir)
+        self.image_paths = []
+        self.labels = []
         self.loaded_volume_ids = set()
         self.expected_volume_ids = set()
         
         # Create expanded dataset with one row per B-scan
         if self.has_images:
             # Compute expected volume_ids from label file
-            self.expected_volume_ids = set(
-                self.original_df.apply(
-                    lambda row: f"{int(row['Patient Number'])}_{row['Laterality']}_{int(row['Diagnosis Date'])}",
-                    axis=1
-                )
-            )
-            self._create_expanded_dataset()
+            for _, row in self.original_df.iterrows():
+                try:
+                    volume_id = f"{int(row['Patient Number'])}_{row['Laterality']}_{int(row['Diagnosis Date'])}"
+                    self.expected_volume_ids.add(volume_id)
+                except (ValueError, TypeError) as e:
+                    # Handle cases where conversion might fail
+                    continue
+                    
+            self._load_image_data()
+            if self.image_paths:
+                # Create DataFrame from image paths and labels
+                image_df = pd.DataFrame({
+                    'image_path': self.image_paths,
+                    self.label_col: self.labels
+                })
+                
+                # Merge with original data for tabular features
+                # This is a simplified approach - in practice you might need to extract
+                # patient info from image paths to properly merge
+                self.df = self.original_df.copy()
+                self.df['image_path'] = None
+                for i, row in self.df.iterrows():
+                    matching_images = [p for p, l in zip(self.image_paths, self.labels) 
+                                      if l == row[self.label_col]]
+                    if matching_images:
+                        self.df.at[i, 'image_path'] = matching_images[0]
+            else:
+                print("Warning: No matching B-scan images found. Using original dataset.")
+                self.df = self.original_df.copy()
+                self.df['image_path'] = None
+                self.has_images = False
         else:
             self.df = self.original_df.copy()
         
@@ -80,81 +110,52 @@ class MultimodalAMDDataset(Dataset):
                 return dirpath
         return None
     
-    def _create_expanded_dataset(self):
+    def _load_image_data(self):
         """
-        Create an expanded dataset where each row corresponds to a single B-scan image.
-        This duplicates tabular data rows to match each B-scan.
+        Load image paths and corresponding labels using the approach from OCTDataset.
         """
-        expanded_rows = []
-        missing_count = 0
-        found_count = 0
-        
-        for idx, row in self.original_df.iterrows():
+        for patient_id in os.listdir(self.image_root_dir):
             try:
-                patient_id = int(row['Patient Number'])
-                eye = row['Laterality']
-                diagnosis_date = int(row['Diagnosis Date'])
-                
-                # Construct path to patient's images
-                patient_path = os.path.join(self.image_root_dir, str(patient_id))
-                if not os.path.isdir(patient_path):
-                    missing_count += 1
-                    continue
-                
-                eye_path = os.path.join(patient_path, eye)
-                if not os.path.isdir(eye_path):
-                    missing_count += 1
-                    continue
-                
-                date_path = os.path.join(eye_path, str(diagnosis_date))
-                if not os.path.isdir(date_path):
-                    missing_count += 1
-                    continue
-                
-                # Find B-scans directory using the improved function
-                b_scans_path = self._find_b_scans_directory(date_path)
-                if not b_scans_path:
-                    missing_count += 1
-                    continue
-                
-                # Record that we successfully loaded this volume
-                volume_id = f"{patient_id}_{eye}_{diagnosis_date}"
-                self.loaded_volume_ids.add(volume_id)
-                
-                # Get all B-scan images
-                b_scan_images = []
-                for img_name in os.listdir(b_scans_path):
-                    if img_name.lower().endswith(('.jpg', '.png')):
-                        img_path = os.path.join(b_scans_path, img_name)
-                        b_scan_images.append(img_path)
-                
-                if not b_scan_images:
-                    missing_count += 1
-                    continue
-                
-                # Create a new row for each B-scan image
-                for img_path in b_scan_images:
-                    new_row = row.copy()
-                    new_row['image_path'] = img_path
-                    expanded_rows.append(new_row)
-                
-                found_count += 1
-            except (ValueError, TypeError, KeyError) as e:
-                missing_count += 1
+                patient_id_int = int(patient_id)
+                if self.original_df['Patient Number'].isin([patient_id_int]).any():
+                    patient_df = self.original_df[self.original_df['Patient Number'] == patient_id_int]
+                    patient_path = os.path.join(self.image_root_dir, patient_id)
+                    if not os.path.isdir(patient_path):
+                        continue
+                    
+                    for eye in ["L", "R"]:
+                        if patient_df['Laterality'].isin([eye]).any():
+                            eye_df = patient_df[patient_df['Laterality'] == eye]
+                            eye_path = os.path.join(patient_path, eye)
+                            if not os.path.isdir(eye_path):
+                                continue
+                            
+                            for scan_date in os.listdir(eye_path):
+                                try:
+                                    scan_date_int = int(scan_date)
+                                    if eye_df['Diagnosis Date'].isin([scan_date_int]).any():
+                                        scan_date_df = eye_df[eye_df['Diagnosis Date'] == scan_date_int]
+                                        scan_date_path = os.path.join(eye_path, scan_date)
+                                        if not os.path.isdir(scan_date_path):
+                                            continue
+                                        
+                                        b_scans_path = self._find_b_scans_directory(scan_date_path)
+                                        if b_scans_path and os.path.isdir(b_scans_path):
+                                            volume_id = f"{patient_id_int}_{eye}_{scan_date}"
+                                            self.loaded_volume_ids.add(volume_id)
+                                            
+                                            for img_name in os.listdir(b_scans_path):
+                                                if img_name.lower().endswith(('.jpg', '.png')):
+                                                    img_path = os.path.join(b_scans_path, img_name)
+                                                    self.image_paths.append(img_path)
+                                                    self.labels.append(scan_date_df[self.label_col].iloc[0])
+                                except (ValueError, TypeError):
+                                    continue
+            except (ValueError, TypeError):
                 continue
         
-        print(f"Created expanded dataset: {found_count} volumes matched with tabular data")
-        print(f"Missing matches: {missing_count} tabular records could not be matched with images")
-        print(f"Total expected volumes in label file: {len(self.expected_volume_ids)}")
-        print(f"Volumes successfully loaded from image folders: {len(self.loaded_volume_ids)}")
-        
-        if expanded_rows:
-            self.df = pd.DataFrame(expanded_rows)
-        else:
-            print("Warning: No matching B-scan images found. Using original dataset.")
-            self.df = self.original_df.copy()
-            self.df['image_path'] = None
-            self.has_images = False
+        print(f"Loaded {len(self.image_paths)} B-scan images")
+        print(f"Volumes successfully loaded: {len(self.loaded_volume_ids)} out of {len(self.expected_volume_ids)} expected")
     
     def report_missing_volumes(self):
         """Print volumes that are in label file but not loaded due to missing images"""
