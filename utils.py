@@ -4,56 +4,6 @@ import numpy as np
 import random
 import torch
 
-def save_datasets(train_dataset, val_dataset, test_dataset, output_dir):
-    """Save train, validation, and test datasets to disk.
-    
-    Args:
-        train_dataset: Training dataset
-        val_dataset: Validation dataset
-        test_dataset: Test dataset
-        output_dir: Directory to save the datasets
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    train_path = os.path.join(output_dir, 'train_dataset.pt')
-    val_path = os.path.join(output_dir, 'val_dataset.pt')
-    test_path = os.path.join(output_dir, 'test_dataset.pt')
-
-    torch.save(train_dataset, train_path)
-    torch.save(val_dataset, val_path)
-    torch.save(test_dataset, test_path)
-
-    print(f"Datasets saved to {output_dir}")
-    return train_path, val_path, test_path
-
-def load_datasets(output_dir):
-    """Load train, validation, and test datasets from disk.
-    
-    Args:
-        output_dir: Directory containing the saved datasets
-        
-    Returns:
-        tuple: (train_dataset, val_dataset, test_dataset)
-    """
-    train_path = os.path.join(output_dir, 'train_dataset.pt')
-    val_path = os.path.join(output_dir, 'val_dataset.pt')
-    test_path = os.path.join(output_dir, 'test_dataset.pt')
-    
-    # Check if all dataset files exist
-    if not all(os.path.exists(path) for path in [train_path, val_path, test_path]):
-        raise FileNotFoundError("One or more dataset files not found in the specified directory")
-    
-    train_dataset = torch.load(train_path)
-    val_dataset = torch.load(val_path)
-    test_dataset = torch.load(test_path)
-    
-    print(f"Datasets loaded from {output_dir}")
-    print(f"Train set: {len(train_dataset)} samples")
-    print(f"Validation set: {len(val_dataset)} samples")
-    print(f"Test set: {len(test_dataset)} samples")
-    
-    return train_dataset, val_dataset, test_dataset
-    
 def plot_training_history(history, output_dir=None, model_type=None):
     """
     Plot training and validation metrics from training history.

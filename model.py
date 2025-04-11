@@ -3,6 +3,9 @@ import torch.nn as nn
 from torchvision.models import resnet50, ResNet50_Weights
 from transformers import BertModel
 from tab_transformer_pytorch import TabTransformer
+import sys
+sys.path.append('RETFound_MAE')  # Adjust path as needed
+from models_vit import RETFound_mae
 
 class ResNet50Encoder(nn.Module):
     def __init__(self, pretrained=True, output_dim=2048):
@@ -13,6 +16,24 @@ class ResNet50Encoder(nn.Module):
 
     def forward(self, x):
         return self.resnet(x)
+    
+class RETFoundEncoder(nn.Module):
+    def __init__(self, pretrained=True, weights_path="RETFound_MAE/RETFound_mae_natureOCT.pth"):
+        super(RETFoundEncoder, self).__init__()
+        self.model = RETFound_mae(img_size=224, num_classes=0)
+        
+        if pretrained:
+            # Load pretrained weights
+            checkpoint = torch.load(weights_path, map_location=torch.device('cpu'), weights_only=False)
+            state_dict = {k: v for k, v in checkpoint['model'].items() 
+                         if not k.startswith("decoder") and "mask_token" not in k}
+            self.model.load_state_dict(state_dict, strict=True)
+            print(f"Loaded RETFound MAE pretrained weights from {weights_path}")
+        
+        self.output_dim = 1024  # RETFound output dimension
+
+    def forward(self, x):
+        return self.model(x)
 
 class CrossAttentionFusion(nn.Module):
     def __init__(self, hidden_dim=768, num_heads=8):
@@ -25,32 +46,45 @@ class CrossAttentionFusion(nn.Module):
         return self.layer_norm(query + attn_output)
 
 class MultiModalFusionBERT(nn.Module):
-    def __init__(self, category_dims, num_continuous, image_feature_dim=2048, tab_feature_dim=64, 
-                 hidden_dim=768, num_heads=8, num_classes=6, finetune_last_bert_layer=False):
+    def __init__(self, hidden_dim=768, num_heads=8):
         super().__init__()
-        self.image_encoder = ResNet50Encoder(pretrained=True)
-        self.image_fc = nn.Linear(self.image_encoder.output_dim, hidden_dim)
+        self.cross_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+
+    def forward(self, query, key, value):
+        attn_output, _ = self.cross_attn(query=query, key=key, value=value)
+        return self.layer_norm(query + attn_output)
+
+class MultiModalFusionBERT(nn.Module):
+    def __init__(self, category_dims, num_continuous, image_feature_dim=2048, tab_feature_dim=64,
+                 hidden_dim=768, num_heads=8, num_classes=6, finetune_last_bert_layer=False,
+                 image_encoder_type='resnet50'):
+        super().__init__()
         
+        # Select image encoder based on type
+        if image_encoder_type == 'resnet50':
+            self.image_encoder = ResNet50Encoder(pretrained=True)
+        elif image_encoder_type == 'retfound':
+            self.image_encoder = RETFoundEncoder(pretrained=True)
+        else:
+            raise ValueError(f"Unknown image encoder type: {image_encoder_type}")
+        
+        self.image_fc = nn.Linear(self.image_encoder.output_dim, hidden_dim)
+
         # Properly initialize TabTransformer with the correct parameters
         self.tab_transformer = TabTransformer(
-            categories=category_dims,  # List of category dimensions
-            num_continuous=num_continuous,  # Number of continuous columns
-            dim=tab_feature_dim,  # Embedding dimension
-            depth=6,  # Number of transformer layers
-            heads=8,  # Number of attention heads
-            dim_head=16,  # Dimension per head
-            dim_out=tab_feature_dim,  # Output dimension
-            mlp_hidden_mults=(4, 2),  # Hidden layer multipliers
-            mlp_act=nn.ReLU(),  # Activation function
-            attn_dropout=0.1,
-            ff_dropout=0.1,
-            num_special_tokens=2
+        categories=category_dims,
+        num_continuous=num_continuous,
+        dim=32,
+        depth=4,
+        heads=8,
+        dim_out=tab_feature_dim
         )
-        self.tab_fc = nn.Linear(tab_feature_dim, hidden_dim)
-        
-        self.cross_attn_fusion = CrossAttentionFusion(hidden_dim=hidden_dim, num_heads=num_heads)
-        self.bert_encoder = BertModel.from_pretrained('bert-base-uncased')
 
+        self.tab_fc = nn.Linear(tab_feature_dim, hidden_dim)
+        self.cross_attn_fusion = CrossAttentionFusion(hidden_dim=hidden_dim, num_heads=num_heads)
+
+        self.bert_encoder = BertModel.from_pretrained('bert-base-uncased')
         if finetune_last_bert_layer:
             for param in self.bert_encoder.parameters():
                 param.requires_grad = False
@@ -70,17 +104,18 @@ class MultiModalFusionBERT(nn.Module):
         # Process image
         image_features = self.image_encoder(image)
         img_embed = self.image_fc(image_features).unsqueeze(1)
-        
+
         # Process tabular data - note the TabTransformer only takes categorical and continuous inputs
         tab_features = self.tab_transformer(categorical, continuous)
         tab_embed = self.tab_fc(tab_features).unsqueeze(1)
-        
+
         # Fusion and BERT processing
         fused = self.cross_attn_fusion(query=tab_embed, key=img_embed, value=img_embed)
         combined_seq = torch.cat([fused, tab_embed], dim=1)
         attention_mask = torch.ones(combined_seq.size()[:2], dtype=torch.long, device=combined_seq.device)
         bert_output = self.bert_encoder(inputs_embeds=combined_seq, attention_mask=attention_mask)
         cls_token = bert_output.last_hidden_state[:, 0, :]
+
         return self.classifier(cls_token)
 
 # Model creation functions
@@ -94,45 +129,6 @@ def create_model(args, dataset):
     else:
         raise ValueError(f"Unknown model type: {args.model_type}")
 
-def load_pretrained_weights(model, weights_path, model_prefix=None):
-    """
-    Load pre-trained weights from a file and apply them to a model.
-    
-    Args:
-        model: The model to load weights into
-        weights_path: Path to the weights file
-        model_prefix: Optional prefix for filtering model keys
-        
-    Returns:
-        Number of layers successfully loaded
-    """
-    try:
-        # Load weights file
-        pretrained_weights = torch.load(weights_path, map_location=torch.device('cpu'))
-        
-        # Get model's current state dict
-        model_dict = model.state_dict()
-        
-        # Filter weights to match model architecture
-        if model_prefix:
-            pretrained_dict = {k: v for k, v in pretrained_weights.items() 
-                              if k.startswith(model_prefix) and k in model_dict 
-                              and model_dict[k].shape == v.shape}
-        else:
-            pretrained_dict = {k: v for k, v in pretrained_weights.items() 
-                              if k in model_dict and model_dict[k].shape == v.shape}
-        
-        # Update model with filtered weights
-        model_dict.update(pretrained_dict)
-        model.load_state_dict(model_dict, strict=False)
-        
-        print(f"Loaded {len(pretrained_dict)}/{len(model_dict)} layers from pretrained weights")
-        return len(pretrained_dict)
-    
-    except Exception as e:
-        print(f"Could not load pretrained weights: {e}")
-        return 0
-
 def create_multimodal_model(args, dataset):
     category_dims = dataset.get_category_dims()
     num_continuous = len(dataset.continuous_cols)
@@ -141,16 +137,39 @@ def create_multimodal_model(args, dataset):
     model = MultiModalFusionBERT(
         category_dims=category_dims,
         num_continuous=num_continuous,
-        image_feature_dim=2048,
+        image_feature_dim=2048 if args.image_encoder_type == 'resnet50' else 1024,
         tab_feature_dim=args.tab_dim,
         hidden_dim=args.hidden_dim,
         num_heads=args.num_heads,
         num_classes=num_classes,
-        finetune_last_bert_layer=True
+        finetune_last_bert_layer=True,
+        image_encoder_type=args.image_encoder_type
     )
 
     # Load pre-trained weights
-    load_pretrained_weights(model, 'tab_transformer_heart.pth', model_prefix='tab_transformer')
+    try:
+        pretrained_weights = torch.load('tab_transformer_heart.pth', map_location=torch.device('cpu'))
+        model_dict = model.state_dict()
+        
+        # Create a mapping from pretrained keys to model keys
+        # This maps the standalone TabTransformer keys to the nested structure
+        pretrained_dict = {}
+        for k, v in pretrained_weights.items():
+            # Create the new key with the proper prefix
+            new_key = f"transformer.{k}"
+            # Only add if the key exists in the model and shapes match
+            if new_key in model_dict and model_dict[new_key].shape == v.shape:
+                pretrained_dict[new_key] = v
+        
+        # Update model with filtered weights
+        if pretrained_dict:
+            model_dict.update(pretrained_dict)
+            model.load_state_dict(model_dict, strict=False)
+            print(f"Loaded {len(pretrained_dict)}/{len(model_dict)} layers from pretrained weights")
+        else:
+            print("No matching layers found in pretrained weights")
+    except Exception as e:
+        print(f"Could not load pretrained weights: {e}")
 
     if args.freeze_encoders:
         for param in model.image_encoder.parameters():
@@ -171,12 +190,21 @@ def create_multimodal_model(args, dataset):
 def create_image_model(args, dataset):
     num_classes = dataset.get_num_classes()
     
+    if args.image_encoder_type == 'resnet50':
+        encoder = ResNet50Encoder(pretrained=True)
+        output_dim = 2048
+    elif args.image_encoder_type == 'retfound':
+        encoder = RETFoundEncoder(pretrained=True)
+        output_dim = 1024
+    else:
+        raise ValueError(f"Unknown image encoder type: {args.image_encoder_type}")
+    
     model = nn.Sequential(
-        ResNet50Encoder(pretrained=True),
-        nn.Linear(2048, 512),
+        encoder,
+        nn.Linear(output_dim, 128),
         nn.ReLU(),
         nn.Dropout(0.2),
-        nn.Linear(512, num_classes)
+        nn.Linear(128, num_classes)
     )
     
     if args.freeze_encoders:
@@ -186,7 +214,6 @@ def create_image_model(args, dataset):
     # Count trainable parameters
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params:.2%})")
     
@@ -196,24 +223,18 @@ def create_tabular_model(args, dataset):
     category_dims = dataset.get_category_dims()
     num_continuous = len(dataset.continuous_cols)
     num_classes = dataset.get_num_classes()
-    
-    # Create the TabTransformer model
+
+    # === initialize TabTransformer ===
     tab_transformer = TabTransformer(
         categories=category_dims,
         num_continuous=num_continuous,
-        dim=args.tab_dim,
-        depth=6,
+        dim=32,
+        depth=4,
         heads=8,
-        dim_head=16,
-        dim_out=args.tab_dim,
-        mlp_hidden_mults=(4, 2),
-        mlp_act=nn.ReLU(),
-        attn_dropout=0.1,
-        ff_dropout=0.1,
-        num_special_tokens=2
+        dim_out=args.tab_dim
     )
-    
-    # Create classifier head
+
+     # Create classifier head
     classifier = nn.Sequential(
         nn.Linear(args.tab_dim, 128),
         nn.ReLU(),
@@ -234,7 +255,29 @@ def create_tabular_model(args, dataset):
     
     model = TabularModel(tab_transformer, classifier)
     
-    load_pretrained_weights(model, 'tab_transformer_heart.pth', model_prefix='tab_transformer')
+    try:
+        pretrained_weights = torch.load('tab_transformer_heart.pth', map_location=torch.device('cpu'))
+        model_dict = model.state_dict()
+        
+        # Create a mapping from pretrained keys to model keys
+        # This maps the standalone TabTransformer keys to the nested structure
+        pretrained_dict = {}
+        for k, v in pretrained_weights.items():
+            # Create the new key with the proper prefix
+            new_key = f"transformer.{k}"
+            # Only add if the key exists in the model and shapes match
+            if new_key in model_dict and model_dict[new_key].shape == v.shape:
+                pretrained_dict[new_key] = v
+        
+        # Update model with filtered weights
+        if pretrained_dict:
+            model_dict.update(pretrained_dict)
+            model.load_state_dict(model_dict, strict=False)
+            print(f"Loaded {len(pretrained_dict)}/{len(model_dict)} layers from pretrained weights")
+        else:
+            print("No matching layers found in pretrained weights")
+    except Exception as e:
+        print(f"Could not load pretrained weights: {e}")
     
     if args.freeze_encoders:
         for param in model.encoder.parameters():

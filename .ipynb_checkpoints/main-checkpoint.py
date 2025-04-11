@@ -9,7 +9,7 @@ from sklearn.model_selection import train_test_split
 from dataset import MultimodalAMDDataset
 from model import create_model
 from train import train_model, test_model
-from utils import set_seed, save_datasets, load_datasets
+from utils import set_seed
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Multimodal AMD Classification')
@@ -22,23 +22,21 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='./outputs/', 
                         help='Directory to save models and results')
     
-    # Add dataset saving/loading parameters
-    parser.add_argument('--dataset_dir', type=str, default='./datasets',
-                       help='Directory to save/load datasets')
-    parser.add_argument('--load_datasets', action='store_true',
-                       help='Load pre-processed datasets instead of creating new ones')
-    parser.add_argument('--save_datasets', action='store_true',
-                       help='Save datasets after train-test split')
-    
     # Model parameters
     parser.add_argument('--model_type', type=str, default='multimodal', 
                         choices=['multimodal', 'image_only', 'tabular_only'],
                         help='Type of model to train')
+    parser.add_argument('--image_encoder_type', type=str, default='resnet50',
+                        choices=['resnet50', 'retfound'],
+                        help='Type of image encoder to use')
+    parser.add_argument('--retfound_weights', type=str, 
+                        default='RETFound_MAE/RETFound_mae_natureOCT.pth',
+                        help='Path to RETFound pretrained weights')
     parser.add_argument('--freeze_encoders', action='store_true', 
                         help='Freeze encoder weights')
     parser.add_argument('--tab_dim', type=int, default=64, 
                         help='Dimension of tabular features')
-    parser.add_argument('--hidden_dim', type=int, default=768, 
+    parser.add_argument('--hidden_dim', type=int, default=1024, 
                         help='Hidden dimension for fusion')
     parser.add_argument('--num_heads', type=int, default=8, 
                         help='Number of attention heads')
@@ -66,7 +64,6 @@ def main():
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
-    os.makedirs(args.dataset_dir, exist_ok=True)
     
     # Set random seed for reproducibility
     set_seed(args.seed)
@@ -75,68 +72,58 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Load or create datasets
-    if args.load_datasets:
-        # Load pre-processed datasets
-        train_dataset, val_dataset, test_dataset = load_datasets(args.dataset_dir)
-    else:
-        # Define image transformations
-        image_transforms = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        
-        # Load dataset
-        print(f"Loading dataset from {args.data_path} and {args.image_dir}")
-        dataset = MultimodalAMDDataset(
-            tabular_path=args.data_path,
-            image_root_dir=args.image_dir,
-            transforms=image_transforms
-        )
-        
-        print(f"Dataset loaded with {len(dataset)} samples")
-        print(f"Number of classes: {dataset.get_num_classes()}")
-        print(f"Class distribution: {dataset.get_class_distribution()}")
-        
-        # Get unique volume IDs
-        volume_ids = dataset.df['volume_id'].unique()
-        
-        # Split at the volume level first
-        train_val_volumes, test_volumes = train_test_split(
-            volume_ids,
-            test_size=args.test_size,
-            stratify=[dataset.get_volume_label(vid) for vid in volume_ids],
-            random_state=args.seed
-        )
-        
-        # Then split train_val into train and validation
-        train_volumes, val_volumes = train_test_split(
-            train_val_volumes,
-            test_size=args.val_size / (1 - args.test_size),
-            stratify=[dataset.get_volume_label(vid) for vid in train_val_volumes],
-            random_state=args.seed
-        )
-        
-        # Now get the indices for each split
-        train_indices = dataset.df[dataset.df['volume_id'].isin(train_volumes)].index.tolist()
-        val_indices = dataset.df[dataset.df['volume_id'].isin(val_volumes)].index.tolist()
-        test_indices = dataset.df[dataset.df['volume_id'].isin(test_volumes)].index.tolist()
+    # Define image transformations
+    image_transforms = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Load dataset
+    print(f"Loading dataset from {args.data_path} and {args.image_dir}")
+    dataset = MultimodalAMDDataset(
+        tabular_path=args.data_path,
+        image_root_dir=args.image_dir,
+        transforms=image_transforms
+    )
+    
+    print(f"Dataset loaded with {len(dataset)} samples")
+    print(f"Number of classes: {dataset.get_num_classes()}")
+    print(f"Class distribution: {dataset.get_class_distribution()}")
+    
+    # Get unique volume IDs
+    volume_ids = dataset.df['volume_id'].unique()
+    
+    # Split at the volume level first
+    train_val_volumes, test_volumes = train_test_split(
+        volume_ids,
+        test_size=args.test_size,
+        stratify=[dataset.get_volume_label(vid) for vid in volume_ids],
+        random_state=args.seed
+    )
+    
+    # Then split train_val into train and validation
+    train_volumes, val_volumes = train_test_split(
+        train_val_volumes,
+        test_size=args.val_size / (1 - args.test_size),
+        stratify=[dataset.get_volume_label(vid) for vid in train_val_volumes],
+        random_state=args.seed
+    )
+    
+    # Now get the indices for each split
+    train_indices = dataset.df[dataset.df['volume_id'].isin(train_volumes)].index.tolist()
+    val_indices = dataset.df[dataset.df['volume_id'].isin(val_volumes)].index.tolist()
+    test_indices = dataset.df[dataset.df['volume_id'].isin(test_volumes)].index.tolist()
 
-        
-        # Create subset datasets
-        train_dataset = torch.utils.data.Subset(dataset, train_indices)
-        val_dataset = torch.utils.data.Subset(dataset, val_indices)
-        test_dataset = torch.utils.data.Subset(dataset, test_indices)
-        
-        print(f"Train set: {len(train_volumes)} volumes, {len(train_indices)} B-scans")
-        print(f"Validation set: {len(val_volumes)} volumes, {len(val_indices)} B-scans")
-        print(f"Test set: {len(test_volumes)} volumes, {len(test_indices)} B-scans")
-
-        
-        # Save datasets if requested
-        if args.save_datasets:
-            save_datasets(train_dataset, val_dataset, test_dataset, args.dataset_dir)
+    
+    # Create subset datasets
+    train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    val_dataset = torch.utils.data.Subset(dataset, val_indices)
+    test_dataset = torch.utils.data.Subset(dataset, test_indices)
+    
+    print(f"Train set: {len(train_volumes)} volumes, {len(train_indices)} B-scans")
+    print(f"Validation set: {len(val_volumes)} volumes, {len(val_indices)} B-scans")
+    print(f"Test set: {len(test_volumes)} volumes, {len(test_indices)} B-scans")
     
     # Create data loaders
     train_loader = torch.utils.data.DataLoader(
