@@ -13,23 +13,8 @@ from utils import plot_training_history
 def train_and_validate(model, train_loader, val_loader, criterion, optimizer, scheduler, device, num_epochs=10):
     """
     Train and validate the model, tracking metrics and using learning rate scheduling.
-    
-    Args:
-        model: The model to train
-        train_loader: DataLoader for training data
-        val_loader: DataLoader for validation data
-        criterion: Loss function
-        optimizer: Optimizer
-        scheduler: Learning rate scheduler
-        device: Device to run on (cuda/cpu)
-        num_epochs: Number of epochs to train
-    
-    Returns:
-        dict: Dictionary containing training history
     """
     model.to(device)
-    
-    # Initialize metrics tracking
     history = {
         'train_loss': [],
         'val_loss': [],
@@ -52,31 +37,31 @@ def train_and_validate(model, train_loader, val_loader, criterion, optimizer, sc
         for batch in train_loader:
             optimizer.zero_grad()
             
-            categorical = batch['categorical'].to(device)
-            continuous = batch['continuous'].to(device)
-            
-            # Handle image if available
-            if 'image' in batch:
+            # Depending on model type, choose the proper input branch.
+            # For tabular_only mode (i.e. TabTransformer tuning), use only 'categorical' and 'continuous' features.
+            if 'image' in batch and batch['image'] is not None:
+                # multimodal branch or image_only branch
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
                 images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                outputs = model(images, categorical, continuous)
             else:
-                # Create a dummy tensor if no images
-                images = torch.zeros((categorical.size(0), 3, 224, 224), device=device)
+                # Tabular-only branch (this aligns with your tuning code for TabTransformer)
+                categorical = batch['categorical'].to(device)
+                continuous = batch['continuous'].to(device)
+                labels = batch['label'].to(device)
+                outputs = model(categorical, continuous)
             
-            labels = batch['label'].to(device)
-            
-            outputs = model(images, categorical, continuous)
             loss = criterion(outputs, labels)
-            
             loss.backward()
             optimizer.step()
             
-            # Record metrics
             train_losses.append(loss.item())
             _, predicted = torch.max(outputs, 1)
             train_preds.extend(predicted.cpu().numpy())
             train_targets.extend(labels.cpu().numpy())
         
-        # Calculate epoch metrics
         train_loss = np.mean(train_losses)
         train_acc = accuracy_score(train_targets, train_preds)
         
@@ -88,39 +73,31 @@ def train_and_validate(model, train_loader, val_loader, criterion, optimizer, sc
         
         with torch.no_grad():
             for batch in val_loader:
-                categorical = batch['categorical'].to(device)
-                continuous = batch['continuous'].to(device)
-                
-                # Handle image if available
-                if 'image' in batch:
+                if 'image' in batch and batch['image'] is not None:
+                    categorical = batch['categorical'].to(device)
+                    continuous = batch['continuous'].to(device)
                     images = batch['image'].to(device)
+                    labels = batch['label'].to(device)
+                    outputs = model(images, categorical, continuous)
                 else:
-                    # Create a dummy tensor if no images
-                    images = torch.zeros((categorical.size(0), 3, 224, 224), device=device)
+                    categorical = batch['categorical'].to(device)
+                    continuous = batch['continuous'].to(device)
+                    labels = batch['label'].to(device)
+                    outputs = model(categorical, continuous)
                 
-                labels = batch['label'].to(device)
-                
-                outputs = model(images, categorical, continuous)
                 loss = criterion(outputs, labels)
-                
-                # Record metrics
                 val_losses.append(loss.item())
                 _, predicted = torch.max(outputs, 1)
                 val_preds.extend(predicted.cpu().numpy())
                 val_targets.extend(labels.cpu().numpy())
         
-        # Calculate validation metrics
         val_loss = np.mean(val_losses)
         val_acc = accuracy_score(val_targets, val_preds)
         
-        # Update learning rate
         scheduler.step(val_loss)
         current_lr = optimizer.param_groups[0]['lr']
-        
-        # Record epoch time
         epoch_time = time.time() - start_time
         
-        # Store history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['train_acc'].append(train_acc)
@@ -128,14 +105,12 @@ def train_and_validate(model, train_loader, val_loader, criterion, optimizer, sc
         history['lr'].append(current_lr)
         history['epoch_times'].append(epoch_time)
         
-        # Print metrics
         print(f"Epoch {epoch+1}/{num_epochs} - {epoch_time:.2f}s - lr: {current_lr:.6f}")
         print(f"  Train Loss: {train_loss:.4f} - Train Acc: {train_acc:.4f}")
         print(f"  Val Loss: {val_loss:.4f} - Val Acc: {val_acc:.4f}")
     
     total_time = sum(history['epoch_times'])
     print(f"Training completed in {total_time:.2f}s")
-    
     return history
 
 def train_model(args, model, train_loader, val_loader, device):
@@ -157,7 +132,6 @@ def train_model(args, model, train_loader, val_loader, device):
     for epoch in range(args.epochs):
         start_time = time.time()
         
-        # Training phase
         model.train()
         train_losses = []
         train_preds = []
@@ -171,20 +145,16 @@ def train_model(args, model, train_loader, val_loader, device):
                 continuous = batch['continuous'].to(device)
                 images = batch['image'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(images, categorical, continuous)
-            
             elif args.model_type == 'image_only':
                 images = batch['image'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(images)
-            
             elif args.model_type == 'tabular_only':
+                # This branch implements the TabTransformer tuning code
                 categorical = batch['categorical'].to(device)
                 continuous = batch['continuous'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(categorical, continuous)
             
             loss = criterion(outputs, labels)
@@ -199,17 +169,11 @@ def train_model(args, model, train_loader, val_loader, device):
         train_loss = np.mean(train_losses)
         train_acc = accuracy_score(train_targets, train_preds)
         
-        # Validation phase
         val_loss, val_acc = evaluate(args, model, val_loader, criterion, device)
-        
-        # Update learning rate
         scheduler.step(val_loss)
         current_lr = optimizer.param_groups[0]['lr']
-        
-        # Record epoch time
         epoch_time = time.time() - start_time
         
-        # Store history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['train_acc'].append(train_acc)
@@ -217,12 +181,10 @@ def train_model(args, model, train_loader, val_loader, device):
         history['lr'].append(current_lr)
         history['epoch_times'].append(epoch_time)
         
-        # Print metrics
         print(f"Epoch {epoch+1}/{args.epochs} - {epoch_time:.2f}s - lr: {current_lr:.6f}")
         print(f"  Train Loss: {train_loss:.4f} - Train Acc: {train_acc:.4f}")
         print(f"  Val Loss: {val_loss:.4f} - Val Acc: {val_acc:.4f}")
     
-    # Save final model
     final_model_path = os.path.join(args.output_dir, f"final_{args.model_type}_model.pt")
     torch.save({
         'epoch': args.epochs,
@@ -235,8 +197,6 @@ def train_model(args, model, train_loader, val_loader, device):
     total_time = sum(history['epoch_times'])
     print(f"Training completed in {total_time:.2f}s")
     print(f"Final validation accuracy: {val_acc:.4f}")
-    
-    # Plot and save training history
     plot_training_history(history, args.output_dir, args.model_type)
     
     return history, final_model_path
@@ -254,25 +214,19 @@ def evaluate(args, model, data_loader, criterion, device):
                 continuous = batch['continuous'].to(device)
                 images = batch['image'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(images, categorical, continuous)
-            
             elif args.model_type == 'image_only':
                 images = batch['image'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(images)
-            
             elif args.model_type == 'tabular_only':
                 categorical = batch['categorical'].to(device)
                 continuous = batch['continuous'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(categorical, continuous)
             
             loss = criterion(outputs, labels)
             losses.append(loss.item())
-            
             _, predicted = torch.max(outputs, 1)
             all_preds.extend(predicted.cpu().numpy())
             all_targets.extend(labels.cpu().numpy())
@@ -285,12 +239,10 @@ def evaluate(args, model, data_loader, criterion, device):
 def test_model(args, model, test_loader, device, dataset):
     model.eval()
     criterion = nn.CrossEntropyLoss()
-    
     test_loss, test_acc = evaluate(args, model, test_loader, criterion, device)
     print(f"Test Loss: {test_loss:.4f}")
     print(f"Test Accuracy: {test_acc:.4f}")
     
-    # Detailed evaluation
     all_preds = []
     all_targets = []
     
@@ -301,60 +253,50 @@ def test_model(args, model, test_loader, device, dataset):
                 continuous = batch['continuous'].to(device)
                 images = batch['image'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(images, categorical, continuous)
-            
             elif args.model_type == 'image_only':
                 images = batch['image'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(images)
-            
             elif args.model_type == 'tabular_only':
                 categorical = batch['categorical'].to(device)
                 continuous = batch['continuous'].to(device)
                 labels = batch['label'].to(device)
-                
                 outputs = model(categorical, continuous)
             
             _, predicted = torch.max(outputs, 1)
             all_preds.extend(predicted.cpu().numpy())
             all_targets.extend(labels.cpu().numpy())
     
-    # Get class names if available
-    class_names = dataset.get_label_map() if hasattr(dataset, 'get_label_map') else None
-    
-    # Calculate and print classification report
+    from sklearn.metrics import classification_report
     print("\nClassification Report:")
-    if class_names is not None:
+    try:
+        class_names = dataset.get_label_map()
         report = classification_report(all_targets, all_preds, target_names=class_names)
-    else:
+    except Exception:
         report = classification_report(all_targets, all_preds)
     print(report)
     
-    # Calculate and plot confusion matrix
     cm = confusion_matrix(all_targets, all_preds)
     plt.figure(figsize=(10, 8))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=class_names if class_names else "auto",
-                yticklabels=class_names if class_names else "auto")
+                xticklabels=dataset.get_label_map() if hasattr(dataset, 'get_label_map') else "auto",
+                yticklabels=dataset.get_label_map() if hasattr(dataset, 'get_label_map') else "auto")
     plt.title(f'Confusion Matrix - {args.model_type.replace("_", " ").title()} Model')
     plt.ylabel('True Label')
     plt.xlabel('Predicted Label')
     
-    # Save confusion matrix
     cm_path = os.path.join(args.output_dir, f'{args.model_type}_confusion_matrix.png')
     plt.savefig(cm_path)
     plt.close()
     
-    # Save predictions to file
     results_df = pd.DataFrame({
         'True': all_targets,
         'Predicted': all_preds
     })
-    if class_names is not None:
-        results_df['True_Label'] = [class_names[i] for i in all_targets]
-        results_df['Predicted_Label'] = [class_names[i] for i in all_preds]
+    if hasattr(dataset, 'get_label_map'):
+        results_df['True_Label'] = [dataset.get_label_map()[i] for i in all_targets]
+        results_df['Predicted_Label'] = [dataset.get_label_map()[i] for i in all_preds]
     
     results_path = os.path.join(args.output_dir, f'{args.model_type}_test_results.csv')
     results_df.to_csv(results_path, index=False)

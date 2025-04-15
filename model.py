@@ -46,16 +46,6 @@ class CrossAttentionFusion(nn.Module):
         return self.layer_norm(query + attn_output)
 
 class MultiModalFusionBERT(nn.Module):
-    def __init__(self, hidden_dim=768, num_heads=8):
-        super().__init__()
-        self.cross_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
-        self.layer_norm = nn.LayerNorm(hidden_dim)
-
-    def forward(self, query, key, value):
-        attn_output, _ = self.cross_attn(query=query, key=key, value=value)
-        return self.layer_norm(query + attn_output)
-
-class MultiModalFusionBERT(nn.Module):
     def __init__(self, category_dims, num_continuous, image_feature_dim=2048, tab_feature_dim=64,
                  hidden_dim=768, num_heads=8, num_classes=6, finetune_last_bert_layer=False,
                  image_encoder_type='resnet50'):
@@ -73,12 +63,12 @@ class MultiModalFusionBERT(nn.Module):
 
         # Properly initialize TabTransformer with the correct parameters
         self.tab_transformer = TabTransformer(
-        categories=category_dims,
-        num_continuous=num_continuous,
-        dim=32,
-        depth=4,
-        heads=8,
-        dim_out=tab_feature_dim
+            categories=category_dims,
+            num_continuous=num_continuous,
+            dim=32,
+            depth=4,
+            heads=8,
+            dim_out=tab_feature_dim
         )
 
         self.tab_fc = nn.Linear(tab_feature_dim, hidden_dim)
@@ -118,7 +108,9 @@ class MultiModalFusionBERT(nn.Module):
 
         return self.classifier(cls_token)
 
+# =============================================================================
 # Model creation functions
+# =============================================================================
 def create_model(args, dataset):
     if args.model_type == 'multimodal':
         return create_multimodal_model(args, dataset)
@@ -146,30 +138,23 @@ def create_multimodal_model(args, dataset):
         image_encoder_type=args.image_encoder_type
     )
 
-    # Load pre-trained weights
+    # Load pre-trained TabTransformer weights into the tabular branch if available
     try:
         pretrained_weights = torch.load('tab_transformer_heart.pth', map_location=torch.device('cpu'))
         model_dict = model.state_dict()
-        
-        # Create a mapping from pretrained keys to model keys
-        # This maps the standalone TabTransformer keys to the nested structure
         pretrained_dict = {}
         for k, v in pretrained_weights.items():
-            # Create the new key with the proper prefix
-            new_key = f"transformer.{k}"
-            # Only add if the key exists in the model and shapes match
+            new_key = f"tab_transformer.{k}"  # If your TabTransformer submodule is named differently adjust accordingly.
             if new_key in model_dict and model_dict[new_key].shape == v.shape:
                 pretrained_dict[new_key] = v
-        
-        # Update model with filtered weights
         if pretrained_dict:
             model_dict.update(pretrained_dict)
             model.load_state_dict(model_dict, strict=False)
-            print(f"Loaded {len(pretrained_dict)}/{len(model_dict)} layers from pretrained weights")
+            print(f"Loaded {len(pretrained_dict)}/{len(model_dict)} layers from pretrained TabTransformer weights")
         else:
-            print("No matching layers found in pretrained weights")
+            print("No matching layers found in pretrained weights for multimodal model.")
     except Exception as e:
-        print(f"Could not load pretrained weights: {e}")
+        print(f"Could not load pretrained weights for multimodal model: {e}")
 
     if args.freeze_encoders:
         for param in model.image_encoder.parameters():
@@ -185,7 +170,6 @@ def create_multimodal_model(args, dataset):
     print(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params:.2%})")
     
     return model
-
 
 def create_image_model(args, dataset):
     num_classes = dataset.get_num_classes()
@@ -211,7 +195,6 @@ def create_image_model(args, dataset):
         for param in model[0].parameters():
             param.requires_grad = False
     
-    # Count trainable parameters
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params:,}")
@@ -220,75 +203,43 @@ def create_image_model(args, dataset):
     return model
 
 def create_tabular_model(args, dataset):
+    """
+    Updated TabTransformer tuning code for tabular-only training.
+    This function builds a TabTransformer whose final output dimension is set directly to the number of classes.
+    Pretrained encoder weights (from tab_transformer_heart.pth) are loaded for fine-tuning.
+    """
     category_dims = dataset.get_category_dims()
     num_continuous = len(dataset.continuous_cols)
     num_classes = dataset.get_num_classes()
 
-    # === initialize TabTransformer ===
-    tab_transformer = TabTransformer(
+    # Initialize TabTransformer with the final output set to number of classes
+    model = TabTransformer(
         categories=category_dims,
         num_continuous=num_continuous,
         dim=32,
         depth=4,
         heads=8,
-        dim_out=args.tab_dim
+        dim_out=num_classes  # Directly output logits for each class
     )
 
-     # Create classifier head
-    classifier = nn.Sequential(
-        nn.Linear(args.tab_dim, 128),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(128, num_classes)
-    )
-    
-    # Create the full model
-    class TabularModel(nn.Module):
-        def __init__(self, encoder, classifier):
-            super().__init__()
-            self.encoder = encoder
-            self.classifier = classifier
-            
-        def forward(self, x_categ, x_cont):
-            features = self.encoder(x_categ, x_cont)
-            return self.classifier(features)
-    
-    model = TabularModel(tab_transformer, classifier)
-    
+    # Load pretrained TabTransformer encoder weights
     try:
         pretrained_weights = torch.load('tab_transformer_heart.pth', map_location=torch.device('cpu'))
-        model_dict = model.state_dict()
-        
-        # Create a mapping from pretrained keys to model keys
-        # This maps the standalone TabTransformer keys to the nested structure
-        pretrained_dict = {}
-        for k, v in pretrained_weights.items():
-            # Create the new key with the proper prefix
-            new_key = f"transformer.{k}"
-            # Only add if the key exists in the model and shapes match
-            if new_key in model_dict and model_dict[new_key].shape == v.shape:
-                pretrained_dict[new_key] = v
-        
-        # Update model with filtered weights
-        if pretrained_dict:
-            model_dict.update(pretrained_dict)
-            model.load_state_dict(model_dict, strict=False)
-            print(f"Loaded {len(pretrained_dict)}/{len(model_dict)} layers from pretrained weights")
-        else:
-            print("No matching layers found in pretrained weights")
+        # Filter keys that belong to the encoder (those starting with "transformer.")
+        transformer_weights = {k: v for k, v in pretrained_weights.items() if k.startswith("transformer.")}
+        model.load_state_dict(transformer_weights, strict=False)
+        print("Loaded pretrained TabTransformer encoder weights for tabular model.")
     except Exception as e:
-        print(f"Could not load pretrained weights: {e}")
-    
+        print(f"Could not load pretrained TabTransformer weights: {e}")
+
     if args.freeze_encoders:
-        for param in model.encoder.parameters():
+        for param in model.parameters():
             param.requires_grad = False
     
-    # Count trainable parameters
+    # Print parameter information
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params:.2%})")
     
     return model
-
