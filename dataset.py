@@ -21,15 +21,10 @@ class MultimodalAMDDataset(Dataset):
         self.categorical_cols = [
             'Laterality', 'SEX', 'CIGARETTES_YN', 'SMOKING_TOB_USE_NAME',
             'SMOKELESS_TOB_USE_NAME', 'TOBACCO_USER_NAME', 'ALCOHOL_USE_NAME',
-            'ILL_DRUG_USER_NAME', 'VA (Closest to Dx)', 'PRIMARY_DX_YN'
+            'ILL_DRUG_USER_NAME', 'PRIMARY_DX_YN', 'ICD10_new_main'
         ]
         
-        self.continuous_cols = [
-            'BIRTH_YEAR', 'BIRTH_MONTH', 'BIRTH_DAY',
-            'VISION_YEAR', 'VISION_MONTH', 'VISION_DAY',
-            'DIAGNOSIS_YEAR', 'DIAGNOSIS_MONTH', 'DIAGNOSIS_DAY'
-        ]
-        
+        self.continuous_cols = ['Age', 'VA']
         self.label_col = 'Diagnosis Label'
         
                # Load tabular data - only drop rows with missing label
@@ -72,25 +67,20 @@ class MultimodalAMDDataset(Dataset):
         else:
             self.df = self.original_df.copy()
         
-        # Encode categorical data with special handling for missing values
-        self.encoders = {}
-        for col in self.categorical_cols:
-            if col in self.df.columns:
-                le = LabelEncoder()
-                # Fill NaN with a special string before encoding
-                filled_values = self.df[col].fillna('MISSING_VALUE').astype(str)
-                self.df[col] = le.fit_transform(filled_values)
-                self.encoders[col] = le
-        
-        # Encode label column (should not have missing values)
+        # label encoding
         le = LabelEncoder()
         self.df[self.label_col] = le.fit_transform(self.df[self.label_col].astype(str))
-        self.encoders[self.label_col] = le
+        self.encoders = { self.label_col: le }
         
-        # Pre-compute tensors for categorical and continuous data
-        self.X_categ = torch.tensor(self.df[self.categorical_cols].values, dtype=torch.long)
-        self.X_cont = torch.tensor(self.df[self.continuous_cols].values, dtype=torch.float32)
-        self.y = torch.tensor(self.df[self.label_col].values, dtype=torch.long)
+        # one-hot encoding for each column
+        df_cat = pd.get_dummies(self.df[self.categorical_cols], prefix=self.categorical_cols, drop_first=False)
+
+        df_cont = self.df[self.continuous_cols].astype(float)
+        df_tab = pd.concat([df_cont, df_cat], axis=1)
+
+        self.X_cont  = torch.tensor(df_tab.values, dtype=torch.float32)
+        self.X_categ = torch.empty((len(self.df), 0), dtype=torch.long)
+        self.y       = torch.tensor(self.df[self.label_col].values, dtype=torch.long)
 
     def _find_b_scans_directory(self, root_path):
         """Find directory containing B-scan images"""
