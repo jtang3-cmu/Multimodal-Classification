@@ -16,10 +16,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Multimodal AMD Classification')
     
     # Dataset parameters
-    parser.add_argument('--data_path', type=str, default='D:/AI_Project_BME/annotation_modified_final_forTrain.xlsx', 
-                        help='Path to the tabular data file')
-    parser.add_argument('--image_dir', type=str, default='D:/cleaning_GUI_annotated_Data/Cirrus_OCT_Imaging_Data', 
-                        help='Path to the image directory')
     parser.add_argument('--output_dir', type=str, default='./outputs/', 
                         help='Directory to save models and results')
     
@@ -61,7 +57,7 @@ def parse_args():
     # New arguments for TabTransformer tuning on tabular data
     parser.add_argument('--tune_tab', action='store_true', 
                         help='Run fine-tuning of TabTransformer on tabular data')
-    parser.add_argument('--tab_data_path', type=str, default='annotation_modified_final_forTrain_v2.xlsx', 
+    parser.add_argument('--tab_data_path', type=str, default='annotation_modified_final_forTrain_v3.xlsx', 
                         help='Path to tabular data file for TabTransformer tuning')
     parser.add_argument('--tab_epochs', type=int, default=20, 
                         help='Number of epochs for TabTransformer tuning')
@@ -97,13 +93,16 @@ def main():
     ])
     
     # Load dataset
-    print(f"Loading dataset from {args.data_path} and {args.image_dir}")
+    data_sources = {
+    r"D:/AI_Project_BME/vol-wise_annotations/vol_anno_ori.xlsx": r"D:/cleaning_GUI_annotated_Data/Cirrus_OCT_Imaging_Data",
+    r"D:/AI_Project_BME/vol-wise_annotations/vol_anno_new.xlsx": r"D:/cleaning_GUI_annotated_Data/New_Data",
+    }
+    print(f"Loading dataset")
     dataset = MultimodalAMDDataset(
-        tabular_path=args.data_path,
-        image_root_dir=args.image_dir,
-        transforms=image_transforms
+        data_sources=data_sources,
+        image_transforms=image_transforms
     )
-    
+
     print(f"Dataset loaded with {len(dataset)} samples")
     print(f"Number of classes: {dataset.get_num_classes()}")
     print(f"Class distribution: {dataset.get_class_distribution()}")
