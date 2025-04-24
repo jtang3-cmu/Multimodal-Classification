@@ -230,7 +230,7 @@ def main() -> Optional[Tuple]:
         args.anno_new: args.imgs_new,
     }
     print("Loading dataset …")
-    dataset = MultimodalAMDDataset(data_sources=data_sources, image_transforms=img_tfms)
+    dataset = MultimodalAMDDataset(data_sources=data_sources, transforms=img_tfms)
     print(f"Total samples: {len(dataset)} | Classes: {dataset.get_num_classes()}")
 
     # ---- volume‑level split ----

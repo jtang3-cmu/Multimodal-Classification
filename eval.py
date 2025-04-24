@@ -82,7 +82,7 @@ def main():
         r"D:/AI_Project_BME/vol-wise_annotations/vol_anno_ori.xlsx": r"D:/cleaning_GUI_annotated_Data/Cirrus_OCT_Imaging_Data",
         r"D:/AI_Project_BME/vol-wise_annotations/vol_anno_new.xlsx": r"D:/cleaning_GUI_annotated_Data/New_Data",
     }
-    dataset = MultimodalAMDDataset(data_sources=data_sources, image_transforms=img_t)
+    dataset = MultimodalAMDDataset(data_sources=data_sources, transforms=img_t)
 
     # Test split (same stratified volume logic as training)
     from sklearn.model_selection import train_test_split

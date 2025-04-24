@@ -46,7 +46,7 @@ def plot_training_history(history, output_dir=None, model_type=None):
     
     # Plot epoch times
     plt.subplot(2, 2, 4)
-    plt.bar(range(1, len(history['epoch_times'])+1), history['epoch_times'])
+    plt.bar(range(1, len(history['epoch_time'])+1), history['epoch_time'])
     plt.title('Training Time per Epoch')
     plt.xlabel('Epoch')
     plt.ylabel('Time (seconds)')
