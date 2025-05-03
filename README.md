@@ -58,7 +58,7 @@ This term project for the **Projects in Biomedical AI (42-687)** course implemen
 
 Below is the high-level architecture diagram illustrating feature extraction, cross-modal fusion, and classification stages.
 
-![Multimodal Architecture](images/multimodal_architecture.png)
+![Multimodal Architecture](images/mutilmodal_architecture.png)
 
 1. **Feature Extraction**
 
