@@ -1,10 +1,9 @@
 # Multimodal Age-Related Macular Degeneration Classification using OCT imaging and Demographic Tabular Data
 
-# Multimodal Macular Degeneration Classification
 
 ## Overview
 
-This term project for the **Projects in Biomedical AI (42-687)** course implements a multimodal deep learning framework that combines optical coherence tomography (OCT) images with structured clinical data to classify age-related macular degeneration (AMD) into six stages: Not AMD, Early AMD, Intermediate AMD, Geographic Atrophy (GA), Scarring, and Wet AMD. The image modality uses a pre-trained RETFound ViT-large encoder, the clinical (tabular) modality uses a gated TabTransformer, and both modalities are fused via a cross-attention module followed by a BERT-style decoder for final classification citeturn0file0.
+This term project for the **Projects in Biomedical AI (42-687)** course implements a multimodal deep learning framework that combines optical coherence tomography (OCT) images with structured clinical data to classify age-related macular degeneration (AMD) into six stages: Not AMD, Early AMD, Intermediate AMD, Geographic Atrophy (GA), Scarring, and Wet AMD. The image modality uses a pre-trained RETFound ViT-large encoder, the clinical (tabular) modality uses a gated TabTransformer, and both modalities are fused via a cross-attention module followed by a BERT-style decoder for final classification.
 
 ## Table of Contents
 
@@ -32,6 +31,13 @@ This term project for the **Projects in Biomedical AI (42-687)** course implemen
 * **Labels**: Not AMD, Early AMD, Intermediate AMD, GA, Scarring, Wet AMD
 
 ## Method
+
+### Stage Annotation
+* Definition: All OCT scans and clinic visit records falling between two consecutive clinical diagnoses are assigned to the earlier AMD stage.
+
+* Procedure: For each patient, sort diagnosis dates chronologically. For each diagnosis date (D_i) corresponding to stage (S_i), label every scan and visit from D_i (inclusive) up to but not including the next diagnosis date D_{i+1} as stage S_i.
+
+* Example: A patient diagnosed with Early AMD on 2020-04-01 and then with Intermediate AMD on 2021-04-01 will have all scans and records between 2020-04-01 and 2021-04-01 labeled as Early AMD.
 
 ### Image Encoder
 
@@ -74,22 +80,22 @@ Below is the high-level architecture diagram illustrating feature extraction, cr
    * Sequence \[Fused, Tabular] → BERT-Base (12 layers, hidden size 768)
    * \[CLS] token → 128-dim MLP → 6-way softmax
 
-Training: Fusion block, BERT decoder, and MLP trained for 10 epochs (batch size 16) while keeping encoders frozen citeturn0file0
+Training: Fusion block, BERT decoder, and MLP trained for 10 epochs (batch size 16) while keeping encoders frozen.
 
 ## Results
 
 ### Image-Only
 
 * **B-scan Accuracy**: Train 84.59%, Val 80.05%
-* **Volume-Level**: 92.45% (3724/4028) citeturn0file0
+* **Volume-Level**: 92.45% (3724/4028)
 
 ### Tabular-Only
 
-* **Test Accuracy**: 46.3% (imbalance impacted recall on Not AMD) citeturn0file0
+* **Test Accuracy**: 46.3% (imbalance impacted recall on Not AMD)
 
 ### Multimodal
 
-* **B-scan Validation Accuracy**: 79.7% (peak at epoch 10) citeturn0file0
+* **B-scan Validation Accuracy**: 79.7% (peak at epoch 10)
 
 ## Installation
 
@@ -139,7 +145,6 @@ MIT License. See [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-Thanks to Dr. Jay Chhablani, Sandeep Chandra Bollepalli, Sharat Chandra, the CAR Lab team, Dr. P. Sang Chalacheva, and TA Nishanth Arun.
 Collaboration with [Choroidal Analysis Research Laboratory](https://ophthalmology.pitt.edu/research/basic-science-research/laboratories/choroidal-analysis-research-laboratory) citeturn0file0
 
 ## Authors
