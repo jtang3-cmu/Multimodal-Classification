@@ -56,7 +56,6 @@ Full report available [here](https://github.com/jtang3-cmu/Multimodal-Classifica
 * **Architecture**: Gated TabTransformer with 4 transformer blocks, each containing 4 attention heads and a gating mechanism to control information flow.
 * **Hyperparameters**: 200 epochs, batch size 64, Adam optimizer with initial lr=1e-3, StepLR scheduler decaying lr by 0.5 every 40 epochs.
 * **Regularization**: Dropout (0.2) applied after each feed-forward layer; early stopping on validation loss with patience of 15 epochs.
-* **Implementation**: PyTorch, with training script available in `src/train_tabular.py` (also mirrored in my fork: `https://github.com/<your-github-username>/md-amp-classification`) citeturn0file0
 
 ### Multimodal Architecture
 
