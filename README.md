@@ -5,6 +5,8 @@
 
 This term project for the **Projects in Biomedical AI (42-687)** course implements a multimodal deep learning framework that combines optical coherence tomography (OCT) images with structured clinical data to classify age-related macular degeneration (AMD) into six stages: Not AMD, Early AMD, Intermediate AMD, Geographic Atrophy (GA), Scarring, and Wet AMD. The image modality uses a pre-trained RETFound ViT-large encoder, the clinical (tabular) modality uses a gated TabTransformer, and both modalities are fused via a cross-attention module followed by a BERT-style decoder for final classification.
 
+Full report available [here](https://github.com/<your-github-username>/md-amp-classification/blob/main/AIBME_final_report.pdf).
+
 ## Table of Contents
 
 * [Dataset](#dataset)
@@ -27,7 +29,7 @@ This term project for the **Projects in Biomedical AI (42-687)** course implemen
 ## Dataset
 
 * **Source**: University of Pittsburgh Medical Center (UPMC) AMD-OCT dataset, provided by the Choroidal Analysis Research Laboratory at UPMC.
-* **Size**: 4,028 OCT volumes (≈637,408 B-scan slices) from 91 patients (2007–2023) citeturn0file0
+* **Size**: 4,028 OCT volumes (≈637,408 B-scan slices) from 91 patients (2007–2023)
 * **Labels**: Not AMD, Early AMD, Intermediate AMD, GA, Scarring, Wet AMD
 
 ## Method
@@ -37,13 +39,13 @@ This term project for the **Projects in Biomedical AI (42-687)** course implemen
 
 * Procedure: For each patient, sort diagnosis dates chronologically. For each diagnosis date (D_i) corresponding to stage (S_i), label every scan and visit from D_i (inclusive) up to but not including the next diagnosis date D_{i+1} as stage S_i.
 
-* Example: A patient diagnosed with Early AMD on 2020-04-01 and then with Intermediate AMD on 2021-04-01 will have all scans and records between 2020-04-01 and 2021-04-01 labeled as Early AMD.
+* Example: A patient diagnosed with Early AMD on 2020-04-01 and then with Intermediate AMD on 2021-04-01 will have all scans and records between 2020-04-01 and 2021-04-01 (not included) labeled as Early AMD.
 
 ### Image Encoder
 
 * **Backbone**: RETFound ViT-large (24-layer Transformer, 1024-dim embeddings), self-supervised pre-trained on 736,442 OCT B-scans.
 * **Classification Head**: Frozen backbone + 128-dim projection + ReLU + Dropout → 6-way output.
-* **Training**: 10 epochs, batch size 128, Adam lr=1e-4, ReduceLROnPlateau scheduler citeturn0file0
+* **Training**: 10 epochs, batch size 128, Adam lr=1e-4, ReduceLROnPlateau scheduler.
 
 ### Tabular Encoder
 
@@ -86,62 +88,18 @@ Training: Fusion block, BERT decoder, and MLP trained for 10 epochs (batch size 
 
 ### Image-Only
 
-* **B-scan Accuracy**: Train 84.59%, Val 80.05%
-* **Volume-Level**: 92.45% (3724/4028)
+* **B-scan Accuracy**: 37%
+![RetFound Confusion Matrix](images/retfound_confusion_matrix.png)
 
 ### Tabular-Only
 
 * **Test Accuracy**: 46.3% (imbalance impacted recall on Not AMD)
+![TabTransformer Confusion Matrix](images/tabtransformer_confusion_matrix.png)
 
 ### Multimodal
 
 * **B-scan Validation Accuracy**: 79.7% (peak at epoch 10)
 
-## Installation
-
-```bash
- git clone https://github.com/<your-github-username>/md-amp-classification.git
- cd md-amp-classification
- conda create -n amd-classify python=3.10
- conda activate amd-classify
- pip install -r requirements.txt
-```
-
-## Usage
-
-```bash
- python train_tabular.py --config configs/tabular.yaml  # Tabular only
- python train_image.py --config configs/image.yaml      # Image only
- python train_fusion.py --config configs/fusion.yaml    # Multimodal
- python predict.py --image path/to/image --clinical path/to/record
-```
-
-## Project Structure
-
-```
-├── data/
-│   ├── images/
-│   └── clinical.csv
-├── docs/
-│   └── architecture_diagram.png  # Multimodal architecture
-├── src/
-│   ├── train_tabular.py
-│   ├── train_image.py
-│   ├── train_fusion.py
-│   └── predict.py
-├── models/
-├── configs/
-├── requirements.txt
-└── README.md
-```
-
-## Contributing
-
-Contributions are welcome via issues or pull requests. Please check existing issues before opening a new one.
-
-## License
-
-MIT License. See [LICENSE](LICENSE).
 
 ## Acknowledgments
 
@@ -149,10 +107,10 @@ Collaboration with [Choroidal Analysis Research Laboratory](https://ophthalmolog
 
 ## Authors
 
-* Martin Goessweiner
-* Jiayi Liu
-* Jainam Modh
-* Jonathan Tang
+* Martin Goessweiner: OCT Image Preprocessing
+* Jiayi Liu: Image Encoder
+* Jainam Modh: Image Encoder
+* Jonathan Tang: Tabular Encoder + Multimodal Training
 
 
 
