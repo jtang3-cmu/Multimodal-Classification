@@ -5,7 +5,7 @@
 
 This term project for the **Projects in Biomedical AI (42-687)** course implements a multimodal deep learning framework that combines optical coherence tomography (OCT) images with structured clinical data to classify age-related macular degeneration (AMD) into six stages: Not AMD, Early AMD, Intermediate AMD, Geographic Atrophy (GA), Scarring, and Wet AMD. The image modality uses a pre-trained RETFound ViT-large encoder, the clinical (tabular) modality uses a gated TabTransformer, and both modalities are fused via a cross-attention module followed by a BERT-style decoder for final classification.
 
-Full report available [here](https://github.com/<your-github-username>/md-amp-classification/blob/main/AIBME_final_report.pdf).
+Full report available [here](AIBME_final_report.pdf).
 
 ## Table of Contents
 
