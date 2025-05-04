@@ -16,11 +16,7 @@ Full report available [here](AIBME_final_report.pdf).
   * [Tabular Encoder](#tabular-encoder)
   * [Multimodal Architecture](#multimodal-architecture)
 * [Results](#results)
-* [Installation](#installation)
-* [Usage](#usage)
 * [Project Structure](#project-structure)
-* [Contributing](#contributing)
-* [License](#license)
 * [Acknowledgments](#acknowledgments)
 * [Authors](#authors)
 
@@ -103,7 +99,7 @@ Training: Fusion block, BERT decoder, and MLP trained for 10 epochs (batch size 
 
 ## Acknowledgments
 
-Collaboration with [Choroidal Analysis Research Laboratory](https://ophthalmology.pitt.edu/research/basic-science-research/laboratories/choroidal-analysis-research-laboratory) citeturn0file0
+Collaboration with [Choroidal Analysis Research Laboratory](https://ophthalmology.pitt.edu/research/basic-science-research/laboratories/choroidal-analysis-research-laboratory)
 
 ## Authors
 
