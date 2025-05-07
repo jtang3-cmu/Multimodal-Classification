@@ -103,9 +103,9 @@ Collaboration with [Choroidal Analysis Research Laboratory](https://ophthalmolog
 ## Authors
 
 * Martin Goessweiner: OCT Image Preprocessing
-* Jiayi Liu: Image Encoder
-* Jainam Modh: Image Encoder
-* Jonathan Tang: Tabular Encoder + Multimodal Training
+* Jiayi Liu: Image Encoder (RetFound) Training
+* Jainam Modh: Image Encoder (RestNet) Training
+* Jonathan Tang: Tabular Encoder (Gated TabTransformer) + Multimodal Training
 
 
 
